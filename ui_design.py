@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListWidget, QApplication
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListWidget, QApplication, QCheckBox
 from azure.identity import InteractiveBrowserCredential
 import jwt
 from data_migration import DataMigration
@@ -34,8 +34,16 @@ class MigrationApp(QWidget):
         self.migrate_button.clicked.connect(self.migrate_data)
         layout.addWidget(self.migrate_button)
 
+        self.dark_mode_checkbox = QCheckBox('Dark Mode')
+        self.dark_mode_checkbox.stateChanged.connect(self.toggle_dark_mode)
+        layout.addWidget(self.dark_mode_checkbox)
+
         self.setLayout(layout)
         self.setWindowTitle('Azure Tenant Migration')
+        self.set_default_stylesheet()
+        self.show()
+
+    def set_default_stylesheet(self):
         self.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
@@ -52,7 +60,35 @@ class MigrationApp(QWidget):
                 border-radius: 5px;
             }
         """)
-        self.show()
+
+    def set_dark_stylesheet(self):
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #2e2e2e;
+                color: white;
+            }
+            QPushButton {
+                background-color: #444;
+                color: white;
+                padding: 10px;
+                border: none;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #555;
+            }
+            QListWidget {
+                background-color: #3e3e3e;
+                border: 1px solid #555;
+                border-radius: 5px;
+            }
+        """)
+
+    def toggle_dark_mode(self):
+        if self.dark_mode_checkbox.isChecked():
+            self.set_dark_stylesheet()
+        else:
+            self.set_default_stylesheet()
 
     def authenticate_source_tenant(self):
         self.source_credential = InteractiveBrowserCredential()
