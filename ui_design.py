@@ -101,6 +101,28 @@ class MainApp(QWidget):
                 border-radius: 5px;
             }
         """)
+        self.menu_bar.setStyleSheet("""
+            QMenuBar {
+                background-color: #f0f0f0;
+                color: black;
+            }
+            QMenuBar::item {
+                background-color: #f0f0f0;
+                color: black;
+            }
+            QMenuBar::item:selected {
+                background-color: #d0d0d0;
+                color: black;
+            }
+            QMenu {
+                background-color: #f0f0f0;
+                color: black;
+            }
+            QMenu::item:selected {
+                background-color: #d0d0d0;
+                color: black;
+            }
+        """)
 
     def set_dark_stylesheet(self):
         self.setStyleSheet("""
@@ -122,6 +144,28 @@ class MainApp(QWidget):
                 background-color: #3e3e3e; /* Slightly lighter gray */
                 border: 1px solid #555;
                 border-radius: 5px;
+            }
+        """)
+        self.menu_bar.setStyleSheet("""
+            QMenuBar {
+                background-color: #2b2b2b;
+                color: white;
+            }
+            QMenuBar::item {
+                background-color: #2b2b2b;
+                color: white;
+            }
+            QMenuBar::item:selected {
+                background-color: #3e3e3e;
+                color: white;
+            }
+            QMenu {
+                background-color: #2b2b2b;
+                color: white;
+            }
+            QMenu::item:selected {
+                background-color: #3e3e3e;
+                color: white;
             }
         """)
 
