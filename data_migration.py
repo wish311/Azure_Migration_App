@@ -156,3 +156,40 @@ class DataMigration:
             logging.error(f"Failed to delete user with ID {user_id} from source tenant.")
         else:
             logging.info(f"User with ID {user_id} removed from source tenant.")
+
+    # New methods for handling groups
+    def get_groups(self):
+        token = self._get_token()
+        if not token:
+            logging.error("Failed to get token for fetching groups")
+            return None
+        return self._get_groups(token)
+
+    def _get_groups(self, token):
+        url = 'https://graph.microsoft.com/v1.0/groups'
+        response = self._make_request('GET', url, token)
+        return response.get('value', []) if response else None
+
+    def migrate_group(self, group):
+        token = self._get_token()
+        if not token:
+            logging.error("Failed to get token for migrating group")
+            return None
+
+        group_params = {
+            'displayName': group.get('displayName', ''),
+            'mailNickname': group.get('mailNickname', ''),
+            'description': group.get('description', ''),
+            'securityEnabled': group.get('securityEnabled', False),
+            'mailEnabled': group.get('mailEnabled', False),
+            'groupTypes': group.get('groupTypes', [])
+        }
+        created_group = self._create_group(token, group_params)
+        if created_group:
+            logging.info(f"Group {group.get('displayName')} migrated successfully.")
+            return created_group
+        return None
+
+    def _create_group(self, token, group_params):
+        url = 'https://graph.microsoft.com/v1.0/groups'
+        return self._make_request('POST', url, token, json=group_params)
