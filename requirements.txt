@@ -1,0 +1,5 @@
+azure-identity
+msal
+requests
+PyQt5
+pyjwt
