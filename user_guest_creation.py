@@ -1,9 +1,10 @@
 import logging
 import requests
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem
+from PyQt5.QtCore import Qt
 from azure.identity import InteractiveBrowserCredential
 import jwt
+
 
 class UserGuestCreationApp(QWidget):
     def __init__(self, parent):
@@ -90,10 +91,87 @@ class UserGuestCreationApp(QWidget):
 
             for item in selected_items:
                 user_data = item.data(Qt.UserRole)
-                # Implement user creation logic here using user_data
-                logging.info(f"Creating user: {user_data['firstName']} {user_data['lastName']}")
+                self.create_user_in_azure(user_data)
         except Exception as e:
             logging.error(f"Failed to create user: {e}")
+
+    def create_user_in_azure(self, user_data):
+        try:
+            token = self.credential.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+
+            # Construct the user payload
+            user_payload = {
+                "accountEnabled": True,
+                "displayName": f"{user_data['firstName']} {user_data['lastName']}",
+                "mailNickname": f"{user_data['firstName']}.{user_data['lastName']}".lower(),
+                "userPrincipalName": f"{user_data['firstName']}.{user_data['lastName']}@yourdomain.com".lower(),
+                "passwordProfile": {
+                    "forceChangePasswordNextSignIn": True,
+                    "password": "TempP@ssword123"  # Temporary password, should be changed
+                },
+                "department": user_data.get("department", "N/A"),
+                "jobTitle": user_data.get("jobTitle", "N/A"),
+                "companyName": user_data.get("companyName", "N/A")
+            }
+
+            # Create the user in Azure AD
+            create_user_url = "https://graph.microsoft.com/v1.0/users"
+            response = requests.post(create_user_url, headers=headers, json=user_payload)
+            response.raise_for_status()
+            logging.info(f"User created: {user_data['firstName']} {user_data['lastName']}")
+
+            # Optionally, add the user to groups based on job title and property
+            self.add_user_to_group(user_data)
+        except Exception as e:
+            logging.error(f"Failed to create user in Azure AD: {e}")
+
+    def add_user_to_group(self, user_data):
+        try:
+            token = self.credential.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+
+            # Replace with logic to determine the group ID based on job title and property
+            group_id = self.get_group_id(user_data)
+
+            # Add user to group
+            user_id = self.get_user_id(user_data['userPrincipalName'])
+            add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
+            add_to_group_payload = {
+                "@odata.id": f"https://graph.microsoft.com/v1.0/users/{user_id}"
+            }
+            response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
+            response.raise_for_status()
+            logging.info(f"User added to group: {user_data['firstName']} {user_data['lastName']}")
+        except Exception as e:
+            logging.error(f"Failed to add user to group: {e}")
+
+    def get_group_id(self, user_data):
+        # Implement logic to get group ID based on user_data['jobTitle'] and other attributes
+        # This is a placeholder and should be replaced with actual logic
+        return "GROUP_ID"
+
+    def get_user_id(self, user_principal_name):
+        try:
+            token = self.credential.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            url = f"https://graph.microsoft.com/v1.0/users/{user_principal_name}"
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            user_info = response.json()
+            return user_info['id']
+        except Exception as e:
+            logging.error(f"Failed to get user ID: {e}")
+            return None
 
     def create_guest(self):
         try:
