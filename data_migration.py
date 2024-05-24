@@ -1,7 +1,8 @@
 import requests
 import logging
-from uuid import uuid4
 import time
+
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
