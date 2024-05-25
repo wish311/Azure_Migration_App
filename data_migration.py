@@ -1,196 +1,296 @@
-import requests
 import logging
-import time
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QComboBox, QListWidget, QListWidgetItem, QLabel
+from PyQt5.QtCore import Qt
+from azure.identity import InteractiveBrowserCredential
+import jwt
+import requests
+from email.mime.text import MIMEText
+import smtplib
 
 
+class DataMigrationApp(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        logging.debug('Initializing DataMigrationApp...')
+        self.initUI()
+        self.credential_source = None
+        self.credential_destination = None
+        self.groups = []
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+    def initUI(self):
+        layout = QVBoxLayout()
 
-class DataMigration:
-    def __init__(self, source_tenant_id, target_tenant_id, client_id, client_secret, credential, target_domain):
-        self.source_tenant_id = source_tenant_id
-        self.target_tenant_id = target_tenant_id
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.credential = credential
-        self.target_domain = target_domain
+        self.source_tenant_label = QLabel('Source Tenant: Not Authenticated')
+        layout.addWidget(self.source_tenant_label)
 
-    def _make_request(self, method, url, token, **kwargs):
+        self.authenticate_source_button = QPushButton('Authenticate Source Tenant')
+        self.authenticate_source_button.clicked.connect(self.authenticate_source_tenant)
+        layout.addWidget(self.authenticate_source_button)
+
+        self.destination_tenant_label = QLabel('Destination Tenant: Not Authenticated')
+        layout.addWidget(self.destination_tenant_label)
+
+        self.authenticate_destination_button = QPushButton('Authenticate Destination Tenant')
+        self.authenticate_destination_button.clicked.connect(self.authenticate_destination_tenant)
+        layout.addWidget(self.authenticate_destination_button)
+
+        self.domain_selector = QComboBox()
+        layout.addWidget(self.domain_selector)
+
+        self.fetch_groups_button = QPushButton('Fetch Groups')
+        self.fetch_groups_button.clicked.connect(self.fetch_groups)
+        layout.addWidget(self.fetch_groups_button)
+
+        self.user_list = QListWidget()
+        layout.addWidget(self.user_list)
+
+        self.create_user_button = QPushButton('Create User')
+        self.create_user_button.clicked.connect(self.create_user)
+        layout.addWidget(self.create_user_button)
+
+        self.create_guest_button = QPushButton('Create Guest')
+        self.create_guest_button.clicked.connect(self.create_guest)
+        layout.addWidget(self.create_guest_button)
+
+        self.setLayout(layout)
+        self.setWindowTitle('Azure Tenant Migration Tool')
+
+    def cleanup_resources(self):
+        logging.debug('Cleaning up DataMigrationApp resources...')
+        # Ensure any external resources are properly closed
+        self.credential_source = None
+        self.credential_destination = None
+        self.groups = []
+
+    def __del__(self):
+        logging.debug('Deleting DataMigrationApp...')
+        self.cleanup_resources()
+
+    def authenticate_source_tenant(self):
         try:
-            headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-            if not token:
-                logging.error("Access token is empty")
-            response = requests.request(method, url, headers=headers, **kwargs)
-            response.raise_for_status()
-            logging.info(f"Response from {url}: {response.text[:200]}")  # Log the first 200 characters of the response
-            return response.json()
-        except requests.exceptions.HTTPError as http_err:
-            logging.error(f"HTTP error occurred: {http_err}")
-            if response is not None:
-                logging.error(f"Response content: {response.text}")
-            return None
-        except Exception as err:
-            logging.error(f"Other error occurred: {err}")
-            if response is not None:
-                logging.error(f"Response content: {response.text}")
-            return None
-
-    def get_users(self):
-        token = self._get_token()
-        if not token:
-            logging.error("Failed to get token for fetching users")
-            return None
-        return self._get_users(token)
-
-    def _get_token(self):
-        try:
-            token = self.credential.get_token("https://graph.microsoft.com/.default").token
-            logging.info(f"Obtained access token: {token[:50]}...")  # Log part of the token for debugging
-            return token
+            self.credential_source = InteractiveBrowserCredential()
+            token = self.credential_source.get_token("https://management.azure.com/.default")
+            tenant_id = self.extract_tenant_id(token.token)
+            self.source_tenant_label.setText(f'Source Tenant: {tenant_id}')
+            logging.info(f"Authenticated Source Tenant: {tenant_id}")
         except Exception as e:
-            logging.error(f"Failed to obtain access token: {e}")
+            logging.error(f"Failed to authenticate source tenant: {e}")
+
+    def authenticate_destination_tenant(self):
+        try:
+            self.credential_destination = InteractiveBrowserCredential()
+            token = self.credential_destination.get_token("https://management.azure.com/.default")
+            tenant_id = self.extract_tenant_id(token.token)
+            self.destination_tenant_label.setText(f'Destination Tenant: {tenant_id}')
+            logging.info(f"Authenticated Destination Tenant: {tenant_id}")
+        except Exception as e:
+            logging.error(f"Failed to authenticate destination tenant: {e}")
+
+    def extract_tenant_id(self, token):
+        try:
+            decoded = jwt.decode(token, options={"verify_signature": False})
+            return decoded['tid']
+        except Exception as e:
+            logging.error(f"Failed to extract tenant ID: {e}")
             return None
 
-    def _get_users(self, token):
-        url = 'https://graph.microsoft.com/v1.0/users'
-        response = self._make_request('GET', url, token)
-        return response.get('value', []) if response else None
-
-    def get_verified_domains(self):
-        token = self._get_token()
-        if not token:
-            logging.error("Failed to get token for fetching verified domains")
-            return None
-        url = 'https://graph.microsoft.com/v1.0/domains'
-        response = self._make_request('GET', url, token)
-        return [domain['id'] for domain in response.get('value', [])] if response else None
-
-    def migrate_user(self, user):
-        token = self._get_token()
-        if not token:
-            logging.error("Failed to get token for migrating user")
-            return None
-
-        mail_nickname = user.get('mailNickname', '')
-        if not mail_nickname or len(mail_nickname) < 1 or len(mail_nickname) > 64:
-            mail_nickname = user.get('userPrincipalName', '').split('@')[0]
-
-        # Verify that the selected domain is in the list of verified domains
-        logging.info(f"Using target domain: {self.target_domain}")
-
-        # Use original userPrincipalName but with the new target domain
-        original_upn = user.get('userPrincipalName', '')
-        unique_upn = f"{original_upn.split('@')[0]}@{self.target_domain}"
-        logging.info(f"Generated userPrincipalName: {unique_upn}")
-
-        # Check if the UPN already exists in the target tenant
-        if self._upn_exists_in_target_tenant(unique_upn, token):
-            logging.error(f"UPN {unique_upn} already exists in the target tenant.")
-            return None
-
-        user_params = {
-            'accountEnabled': user.get('accountEnabled', True),
-            'displayName': user.get('displayName', ''),
-            'mailNickname': mail_nickname,
-            'userPrincipalName': unique_upn,
-            'passwordProfile': {
-                'password': 'TemporaryPassword123!',
-                'forceChangePasswordNextSignIn': True
+    def fetch_groups(self):
+        try:
+            token = self.credential_destination.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
             }
-        }
-        created_user = self._create_user(token, user_params)
-        if created_user:
-            logging.info(f"User {user.get('displayName')} migrated successfully.")
-            # Verify user in target tenant
-            if self._verify_user_in_target_tenant(unique_upn):
-                logging.info(f"User {user.get('displayName')} verified in target tenant.")
-            else:
-                logging.error(f"User {user.get('displayName')} not found in target tenant after migration.")
-            return created_user
-        return None
+            url = "https://graph.microsoft.com/v1.0/groups"
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            groups_data = response.json().get('value', [])
+            self.populate_group_selector(groups_data)
+        except Exception as e:
+            logging.error(f"Failed to fetch groups: {e}")
 
-    def _create_user(self, token, user_params):
-        url = 'https://graph.microsoft.com/v1.0/users'
-        return self._make_request('POST', url, token, json=user_params)
+    def populate_group_selector(self, groups_data):
+        self.domain_selector.clear()
+        for group in groups_data:
+            self.domain_selector.addItem(group['displayName'], group['id'])
 
-    def _verify_user_in_target_tenant(self, user_principal_name, max_retries=5, delay=5):
-        for attempt in range(max_retries):
-            token = self._get_token()
-            if not token:
-                logging.error("Failed to get token for verifying user")
-                return False
-            users = self._get_users_paginated(token)
-            for user in users:
-                if user['userPrincipalName'] == user_principal_name:
-                    return True
-            logging.info(f"User not found, retrying... ({attempt + 1}/{max_retries})")
-            time.sleep(delay)
-        return False
+    def create_user(self):
+        try:
+            selected_items = self.user_list.selectedItems()
+            if not selected_items:
+                logging.info("No user selected.")
+                return
 
-    def _get_users_paginated(self, token):
-        users = []
-        url = 'https://graph.microsoft.com/v1.0/users'
-        while url:
-            response = self._make_request('GET', url, token)
-            if not response:
-                break
-            users.extend(response.get('value', []))
-            url = response.get('@odata.nextLink', None)
-        return users
+            for item in selected_items:
+                user_data = item.data(Qt.UserRole)
+                self.create_user_in_azure(user_data)
+                # Logic for updating ticket and sending email here
+        except Exception as e:
+            logging.error(f"Failed to create user: {e}")
 
-    def _upn_exists_in_target_tenant(self, user_principal_name, token):
-        users = self._get_users_paginated(token)
-        for user in users:
-            if user['userPrincipalName'] == user_principal_name:
-                return True
-        return False
+    def create_user_in_azure(self, user_data):
+        try:
+            token = self.credential_destination.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
 
-    def remove_user(self, user_id):
-        token = self._get_token()
-        if not token:
-            logging.error("Failed to get token for removing user")
+            user_payload = {
+                "accountEnabled": True,
+                "displayName": f"{user_data['firstName']} {user_data['lastName']}",
+                "mailNickname": f"{user_data['firstName']}.{user_data['lastName']}".lower(),
+                "userPrincipalName": f"{user_data['firstName']}.{user_data['lastName']}@yourdomain.com".lower(),
+                "passwordProfile": {
+                    "forceChangePasswordNextSignIn": True,
+                    "password": "TempP@ssword123"
+                },
+                "department": user_data.get("department", "N/A"),
+                "jobTitle": user_data.get("jobTitle", "N/A"),
+                "companyName": user_data.get("companyName", "N/A")
+            }
+
+            create_user_url = "https://graph.microsoft.com/v1.0/users"
+            response = requests.post(create_user_url, headers=headers, json=user_payload)
+            response.raise_for_status()
+            logging.info(f"User created: {user_data['firstName']} {user_data['lastName']}")
+
+            self.add_user_to_group(user_data)
+        except Exception as e:
+            logging.error(f"Failed to create user in Azure AD: {e}")
+
+    def add_user_to_group(self, user_data):
+        try:
+            token = self.credential_destination.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+
+            group_id = self.domain_selector.currentData()
+            user_id = self.get_user_id(user_data['userPrincipalName'])
+            add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
+            add_to_group_payload = {
+                "@odata.id": f"https://graph.microsoft.com/v1.0/users/{user_id}"
+            }
+            response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
+            response.raise_for_status()
+            logging.info(f"User added to group: {user_data['firstName']} {user_data['lastName']}")
+        except Exception as e:
+            logging.error(f"Failed to add user to group: {e}")
+
+    def get_user_id(self, user_principal_name):
+        try:
+            token = self.credential_destination.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            url = f"https://graph.microsoft.com/v1.0/users/{user_principal_name}"
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            user_info = response.json()
+            return user_info['id']
+        except Exception as e:
+            logging.error(f"Failed to get user ID: {e}")
             return None
-        url = f'https://graph.microsoft.com/v1.0/users/{user_id}'
-        response = self._make_request('DELETE', url, token)
-        if response is None:
-            logging.error(f"Failed to delete user with ID {user_id} from source tenant.")
-        else:
-            logging.info(f"User with ID {user_id} removed from source tenant.")
 
-    # New methods for handling groups
-    def get_groups(self):
-        token = self._get_token()
-        if not token:
-            logging.error("Failed to get token for fetching groups")
-            return None
-        return self._get_groups(token)
+    def create_guest(self):
+        try:
+            selected_items = self.user_list.selectedItems()
+            if not selected_items:
+                logging.info("No guest selected.")
+                return
 
-    def _get_groups(self, token):
-        url = 'https://graph.microsoft.com/v1.0/groups'
-        response = self._make_request('GET', url, token)
-        return response.get('value', []) if response else None
+            for item in selected_items:
+                user_data = item.data(Qt.UserRole)
+                self.create_guest_in_azure(user_data)
+                # Logic for updating ticket here
+        except Exception as e:
+            logging.error(f"Failed to create guest: {e}")
 
-    def migrate_group(self, group):
-        token = self._get_token()
-        if not token:
-            logging.error("Failed to get token for migrating group")
-            return None
+    def create_guest_in_azure(self, user_data):
+        try:
+            token = self.credential_destination.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
 
-        group_params = {
-            'displayName': group.get('displayName', ''),
-            'mailNickname': group.get('mailNickname', ''),
-            'description': group.get('description', ''),
-            'securityEnabled': group.get('securityEnabled', False),
-            'mailEnabled': group.get('mailEnabled', False),
-            'groupTypes': group.get('groupTypes', [])
-        }
-        created_group = self._create_group(token, group_params)
-        if created_group:
-            logging.info(f"Group {group.get('displayName')} migrated successfully.")
-            return created_group
-        return None
+            guest_payload = {
+                "invitedUserDisplayName": f"{user_data['firstName']} {user_data['lastName']}",
+                "invitedUserEmailAddress": f"{user_data['email']}",
+                "inviteRedirectUrl": "https://myapps.microsoft.com",
+                "sendInvitationMessage": True
+            }
 
-    def _create_group(self, token, group_params):
-        url = 'https://graph.microsoft.com/v1.0/groups'
-        return self._make_request('POST', url, token, json=group_params)
+            create_guest_url = "https://graph.microsoft.com/v1.0/invitations"
+            response = requests.post(create_guest_url, headers=headers, json=guest_payload)
+            response.raise_for_status()
+            logging.info(f"Guest created: {user_data['firstName']} {user_data['lastName']}")
+
+            self.add_guest_to_group(user_data)
+        except Exception as e:
+            logging.error(f"Failed to create guest in Azure AD: {e}")
+
+    def add_guest_to_group(self, user_data):
+        try:
+            token = self.credential_destination.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+
+            group_id = self.domain_selector.currentData()
+            guest_user_id = self.get_user_id(user_data['email'])
+
+            if not guest_user_id:
+                logging.error(f"Guest user ID not found for {user_data['email']}")
+                return
+
+            add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
+            add_to_group_payload = {
+                "@odata.id": f"https://graph.microsoft.com/v1.0/users/{guest_user_id}"
+            }
+            response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
+            response.raise_for_status()
+            logging.info(f"Guest added to group: {user_data['firstName']} {user_data['lastName']}")
+        except Exception as e:
+            logging.error(f"Failed to add guest to group: {e}")
+
+    def send_email(self, user_data, subject, body, to_email):
+        try:
+            smtp_server = "smtp.office365.com"  # Microsoft 365 SMTP server
+            smtp_port = 587  # Microsoft 365 SMTP port
+            smtp_username = "yourusername@yourdomain.com"  # Your Microsoft 365 email
+            smtp_password = "yourpassword"  # Your Microsoft 365 email password
+            from_email = smtp_username  # Same as smtp_username for Microsoft 365
+
+            msg = MIMEText(body)
+            msg['Subject'] = subject
+            msg['From'] = from_email
+            msg['To'] = to_email
+
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_username, smtp_password)
+                server.sendmail(from_email, [to_email], msg.as_string())
+
+            logging.info(f"Sent email to {user_data['firstName']} {user_data['lastName']}")
+        except Exception as e:
+            logging.error(f"Failed to send email: {e}")
+
+    def generate_email_body(self, user_data):
+        return f"""
+        Dear {user_data['firstName']} {user_data['lastName']},
+
+        Your account has been created successfully. Here are your credentials:
+
+        Username: {user_data['firstName']}.{user_data['lastName']}@yourdomain.com
+        Temporary Password: TempP@ssword123
+
+        Please change your password upon first login.
+
+        Regards,
+        IT Team
+        """

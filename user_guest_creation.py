@@ -1,29 +1,36 @@
-import logging
-import requests
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem
+import smtplib
+from email.mime.text import MIMEText
+
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QComboBox, QListWidget, QLabel
 from azure.identity import InteractiveBrowserCredential
 import jwt
+import requests
+import logging
 
 
 class UserGuestCreationApp(QWidget):
     def __init__(self, parent):
-        super().__init__()
-        self.parent = parent
+        super().__init__(parent)
         self.credential = None
-        self.tenant_id = None
         self.initUI()
 
     def initUI(self):
         layout = QVBoxLayout()
 
-        self.auth_button = QPushButton('Sign in to Tenant')
-        self.auth_button.clicked.connect(self.authenticate_tenant)
-        layout.addWidget(self.auth_button)
+        self.tenant_label = QLabel('Tenant: Not Authenticated')
+        layout.addWidget(self.tenant_label)
 
-        self.fetch_requests_button = QPushButton('Fetch User Requests')
-        self.fetch_requests_button.clicked.connect(self.fetch_user_requests)
-        layout.addWidget(self.fetch_requests_button)
+        self.authenticate_button = QPushButton('Authenticate Tenant')
+        self.authenticate_button.clicked.connect(self.authenticate_tenant)
+        layout.addWidget(self.authenticate_button)
+
+        self.domain_selector = QComboBox()
+        layout.addWidget(self.domain_selector)
+
+        self.fetch_groups_button = QPushButton('Fetch Groups')
+        self.fetch_groups_button.clicked.connect(self.fetch_groups)
+        layout.addWidget(self.fetch_groups_button)
 
         self.user_list = QListWidget()
         layout.addWidget(self.user_list)
@@ -39,15 +46,13 @@ class UserGuestCreationApp(QWidget):
         self.setLayout(layout)
         self.setWindowTitle('User/Guest Creation Tool')
 
-    def toggle_dark_mode(self):
-        self.parent.toggle_dark_mode()
-
     def authenticate_tenant(self):
         try:
             self.credential = InteractiveBrowserCredential()
             token = self.credential.get_token("https://management.azure.com/.default")
-            self.tenant_id = self.extract_tenant_id(token.token)
-            logging.info("Authenticated Tenant")
+            tenant_id = self.extract_tenant_id(token.token)
+            self.tenant_label.setText(f'Tenant: {tenant_id}')
+            logging.info(f"Authenticated Tenant: {tenant_id}")
         except Exception as e:
             logging.error(f"Failed to authenticate tenant: {e}")
 
@@ -59,28 +64,31 @@ class UserGuestCreationApp(QWidget):
             logging.error(f"Failed to extract tenant ID: {e}")
             return None
 
-    def fetch_user_requests(self):
+    def fetch_groups(self):
         try:
-            api_url = "https://api.solarwinds.com/v1/requests"  # Example API URL, replace with actual
-            api_token = "YOUR_SOLARWINDS_API_TOKEN"  # Replace with your API token
+            token = self.credential.get_token("https://graph.microsoft.com/.default").token
             headers = {
-                "Authorization": f"Bearer {api_token}",
+                "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json"
             }
-            response = requests.get(api_url, headers=headers)
+            url = "https://graph.microsoft.com/v1.0/groups"
+            response = requests.get(url, headers=headers)
             response.raise_for_status()
-            requests_data = response.json()
-            self.populate_user_list(requests_data)
-        except Exception as e:
-            logging.error(f"Failed to fetch user requests: {e}")
 
-    def populate_user_list(self, requests_data):
-        self.user_list.clear()
-        for request in requests_data:
-            user_info = f"{request['firstName']} {request['lastName']} ({request['email']})"
-            item = QListWidgetItem(user_info)
-            item.setData(Qt.UserRole, request)
-            self.user_list.addItem(item)
+            # Log the response content for debugging
+            logging.debug(f"Response content: {response.content}")
+
+            groups_data = response.json().get('value', [])
+            logging.debug(f"Parsed groups data: {groups_data}")
+            self.populate_group_selector(groups_data)
+        except Exception as e:
+            logging.error(f"Failed to fetch groups: {e}")
+
+    def populate_group_selector(self, groups_data):
+        self.domain_selector.clear()
+        for group in groups_data:
+            logging.debug(f"Adding group to selector: {group['displayName']} with ID {group['id']}")
+            self.domain_selector.addItem(group['displayName'], group['id'])
 
     def create_user(self):
         try:
@@ -92,6 +100,7 @@ class UserGuestCreationApp(QWidget):
             for item in selected_items:
                 user_data = item.data(Qt.UserRole)
                 self.create_user_in_azure(user_data)
+                # Logic for updating ticket and sending email here
         except Exception as e:
             logging.error(f"Failed to create user: {e}")
 
@@ -103,7 +112,6 @@ class UserGuestCreationApp(QWidget):
                 "Content-Type": "application/json"
             }
 
-            # Construct the user payload
             user_payload = {
                 "accountEnabled": True,
                 "displayName": f"{user_data['firstName']} {user_data['lastName']}",
@@ -111,20 +119,18 @@ class UserGuestCreationApp(QWidget):
                 "userPrincipalName": f"{user_data['firstName']}.{user_data['lastName']}@yourdomain.com".lower(),
                 "passwordProfile": {
                     "forceChangePasswordNextSignIn": True,
-                    "password": "TempP@ssword123"  # Temporary password, should be changed
+                    "password": "TempP@ssword123"
                 },
                 "department": user_data.get("department", "N/A"),
                 "jobTitle": user_data.get("jobTitle", "N/A"),
                 "companyName": user_data.get("companyName", "N/A")
             }
 
-            # Create the user in Azure AD
             create_user_url = "https://graph.microsoft.com/v1.0/users"
             response = requests.post(create_user_url, headers=headers, json=user_payload)
             response.raise_for_status()
             logging.info(f"User created: {user_data['firstName']} {user_data['lastName']}")
 
-            # Optionally, add the user to groups based on job title and property
             self.add_user_to_group(user_data)
         except Exception as e:
             logging.error(f"Failed to create user in Azure AD: {e}")
@@ -137,10 +143,7 @@ class UserGuestCreationApp(QWidget):
                 "Content-Type": "application/json"
             }
 
-            # Replace with logic to determine the group ID based on job title and property
-            group_id = self.get_group_id(user_data)
-
-            # Add user to group
+            group_id = self.domain_selector.currentData()
             user_id = self.get_user_id(user_data['userPrincipalName'])
             add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
             add_to_group_payload = {
@@ -151,11 +154,6 @@ class UserGuestCreationApp(QWidget):
             logging.info(f"User added to group: {user_data['firstName']} {user_data['lastName']}")
         except Exception as e:
             logging.error(f"Failed to add user to group: {e}")
-
-    def get_group_id(self, user_data):
-        # Implement logic to get group ID based on user_data['jobTitle'] and other attributes
-        # This is a placeholder and should be replaced with actual logic
-        return "GROUP_ID"
 
     def get_user_id(self, user_principal_name):
         try:
@@ -182,7 +180,93 @@ class UserGuestCreationApp(QWidget):
 
             for item in selected_items:
                 user_data = item.data(Qt.UserRole)
-                # Implement guest creation logic here using user_data
-                logging.info(f"Creating guest: {user_data['firstName']} {user_data['lastName']}")
+                self.create_guest_in_azure(user_data)
+                # Logic for updating ticket here
         except Exception as e:
             logging.error(f"Failed to create guest: {e}")
+
+    def create_guest_in_azure(self, user_data):
+        try:
+            token = self.credential.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+
+            guest_payload = {
+                "invitedUserDisplayName": f"{user_data['firstName']} {user_data['lastName']}",
+                "invitedUserEmailAddress": f"{user_data['email']}",
+                "inviteRedirectUrl": "https://myapps.microsoft.com",
+                "sendInvitationMessage": True
+            }
+
+            create_guest_url = "https://graph.microsoft.com/v1.0/invitations"
+            response = requests.post(create_guest_url, headers=headers, json=guest_payload)
+            response.raise_for_status()
+            logging.info(f"Guest created: {user_data['firstName']} {user_data['lastName']}")
+
+            self.add_guest_to_group(user_data)
+        except Exception as e:
+            logging.error(f"Failed to create guest in Azure AD: {e}")
+
+    def add_guest_to_group(self, user_data):
+        try:
+            token = self.credential.get_token("https://graph.microsoft.com/.default").token
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+
+            group_id = self.domain_selector.currentData()
+            guest_user_id = self.get_user_id(user_data['email'])
+
+            if not guest_user_id:
+                logging.error(f"Guest user ID not found for {user_data['email']}")
+                return
+
+            add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
+            add_to_group_payload = {
+                "@odata.id": f"https://graph.microsoft.com/v1.0/users/{guest_user_id}"
+            }
+            response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
+            response.raise_for_status()
+            logging.info(f"Guest added to group: {user_data['firstName']} {user_data['lastName']}")
+        except Exception as e:
+            logging.error(f"Failed to add guest to group: {e}")
+
+    def send_email(self, user_data, subject, body, to_email):
+        try:
+            smtp_server = "smtp.office365.com"  # Microsoft 365 SMTP server
+            smtp_port = 587  # Microsoft 365 SMTP port
+            smtp_username = "yourusername@yourdomain.com"  # Your Microsoft 365 email
+            smtp_password = "yourpassword"  # Your Microsoft 365 email password
+            from_email = smtp_username  # Same as smtp_username for Microsoft 365
+
+            msg = MIMEText(body)
+            msg['Subject'] = subject
+            msg['From'] = from_email
+            msg['To'] = to_email
+
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_username, smtp_password)
+                server.sendmail(from_email, [to_email], msg.as_string())
+
+            logging.info(f"Sent email to {user_data['firstName']} {user_data['lastName']}")
+        except Exception as e:
+            logging.error(f"Failed to send email: {e}")
+
+    def generate_email_body(self, user_data):
+        return f"""
+        Dear {user_data['firstName']} {user_data['lastName']},
+
+        Your account has been created successfully. Here are your credentials:
+
+        Username: {user_data['firstName']}.{user_data['lastName']}@yourdomain.com
+        Temporary Password: TempP@ssword123
+
+        Please change your password upon first login.
+
+        Regards,
+        IT Team
+        """
