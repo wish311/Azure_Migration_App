@@ -1,5 +1,5 @@
-azure-identity
-msal
-requests
+azure
 PyQt5
-pyjwt
+jwt
+requests
+python-dotenv

@@ -1,12 +1,18 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QComboBox, QListWidget, QLabel, QCheckBox, \
-    QListWidgetItem, QLineEdit, QFormLayout, QDialog, QDialogButtonBox
-from PyQt5.QtCore import Qt
-from azure.identity import InteractiveBrowserCredential
+import logging
+import smtplib
+from email.mime.text import MIMEText
+
 import jwt
 import requests
-import logging
-from email.mime.text import MIMEText
-import smtplib
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QPushButton, QListWidget, QLabel,
+    QListWidgetItem, QLineEdit, QFormLayout, QDialog,
+    QDialogButtonBox
+)
+from azure.identity import InteractiveBrowserCredential
+
+import config
 
 
 class UserGuestCreationApp(QWidget):
@@ -87,11 +93,7 @@ class UserGuestCreationApp(QWidget):
             response = requests.get(url, headers=headers)
             response.raise_for_status()
 
-            # Log the response content for debugging
-            logging.debug(f"Response content: {response.content}")
-
             groups_data = response.json().get('value', [])
-            logging.debug(f"Parsed groups data: {groups_data}")
             self.populate_group_selector(groups_data)
         except Exception as e:
             logging.error(f"Failed to fetch groups: {e}")
@@ -139,10 +141,11 @@ class UserGuestCreationApp(QWidget):
                 user_data = {
                     "firstName": ticket['requester']['name'].split()[0],
                     "lastName": ticket['requester']['name'].split()[-1],
-                    "email": ticket['requester']['email'],
+                    "email": f"{ticket['requester']['name'].split()[0].lower()}.{ticket['requester']['name'].split()[-1].lower()}@yourdomain.com",
                     "department": ticket['department']['name'],
                     "jobTitle": ticket['assignee']['name'],
-                    "companyName": ticket['site']['name']
+                    "companyName": ticket['site']['name'],
+                    "empID": ticket.get('custom_fields_values', {}).get('empID', 'N/A')
                 }
                 self.create_user_in_azure(user_data)
                 self.update_ticket_status(ticket['id'])
@@ -170,8 +173,11 @@ class UserGuestCreationApp(QWidget):
                 },
                 "department": user_data.get("department", "N/A"),
                 "jobTitle": user_data.get("jobTitle", "N/A"),
-                "companyName": user_data.get("companyName", "N/A")
+                "companyName": user_data.get("companyName", "N/A"),
+                "employeeId": user_data.get("empID", "N/A")
             }
+
+            logging.debug(f"User payload: {user_payload}")
 
             create_user_url = "https://graph.microsoft.com/v1.0/users"
             response = requests.post(create_user_url, headers=headers, json=user_payload)
@@ -210,14 +216,13 @@ class UserGuestCreationApp(QWidget):
         try:
             token = self.credential.get_token("https://graph.microsoft.com/.default").token
             headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
+                "Authorization": f"Bearer {token}"
             }
             url = f"https://graph.microsoft.com/v1.0/users/{user_principal_name}"
             response = requests.get(url, headers=headers)
             response.raise_for_status()
-            user_info = response.json()
-            return user_info['id']
+            user_data = response.json()
+            return user_data['id']
         except Exception as e:
             logging.error(f"Failed to get user ID: {e}")
             return None
@@ -315,11 +320,15 @@ class UserGuestCreationApp(QWidget):
 
     def send_email(self, user_data, subject, body, to_email):
         try:
-            smtp_server = "smtp.office365.com"  # Microsoft 365 SMTP server
-            smtp_port = 587  # Microsoft 365 SMTP port
-            smtp_username = "yourusername@yourdomain.com"  # Your Microsoft 365 email
-            smtp_password = "yourpassword"  # Your Microsoft 365 email password
+            smtp_server = config.SMTP_SERVER
+            smtp_port = config.SMTP_PORT
+            smtp_username = config.SMTP_USERNAME
+            smtp_password = config.SMTP_PASSWORD
             from_email = smtp_username  # Same as smtp_username for Microsoft 365
+
+            if not smtp_username or not smtp_password:
+                logging.error("SMTP credentials are not set in environment variables.")
+                return
 
             msg = MIMEText(body)
             msg['Subject'] = subject
@@ -361,6 +370,8 @@ class UserGuestCreationApp(QWidget):
         department_input = QLineEdit()
         job_title_input = QLineEdit()
         company_name_input = QLineEdit()
+        emp_id_input = QLineEdit()
+        manager_email_input = QLineEdit()
 
         form_layout.addRow('First Name:', first_name_input)
         form_layout.addRow('Last Name:', last_name_input)
@@ -368,6 +379,8 @@ class UserGuestCreationApp(QWidget):
         form_layout.addRow('Department:', department_input)
         form_layout.addRow('Job Title:', job_title_input)
         form_layout.addRow('Company Name:', company_name_input)
+        form_layout.addRow('EMP ID:', emp_id_input)
+        form_layout.addRow('Manager Email:', manager_email_input)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(lambda: self.create_manual_user(
@@ -377,6 +390,8 @@ class UserGuestCreationApp(QWidget):
             department_input.text(),
             job_title_input.text(),
             company_name_input.text(),
+            emp_id_input.text(),
+            manager_email_input.text(),
             dialog
         ))
         buttons.rejected.connect(dialog.reject)
@@ -385,20 +400,24 @@ class UserGuestCreationApp(QWidget):
         dialog.setLayout(form_layout)
         dialog.exec_()
 
-    def create_manual_user(self, first_name, last_name, email, department, job_title, company_name, dialog):
+    def create_manual_user(self, first_name, last_name, email, department, job_title, company_name, emp_id,
+                           manager_email, dialog):
         try:
+            email = f"{first_name.lower()}.{last_name.lower()}@yourdomain.com"
+            mail_nickname = f"{first_name.lower()}.{last_name.lower()}"
             user_data = {
                 "firstName": first_name,
                 "lastName": last_name,
                 "email": email,
+                "mailNickname": mail_nickname,
                 "department": department,
                 "jobTitle": job_title,
-                "companyName": company_name
+                "companyName": company_name,
+                "empID": emp_id
             }
             self.create_user_in_azure(user_data)
-            self.send_email(user_data, "User Account Created", self.generate_email_body(user_data), email)
+            self.send_email(user_data, "User Account Created", self.generate_email_body(user_data), manager_email)
             dialog.accept()
         except Exception as e:
             logging.error(f"Failed to create manual user: {e}")
             dialog.reject()
-
