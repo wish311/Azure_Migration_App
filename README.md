@@ -1,34 +1,34 @@
-# Azure Tenant Migration App
+# Azure Migration and User/Guest Creation Tool
 
-This app helps to migrate data between two Azure tenants with a user-friendly GUI.
+This Python application provides two main functionalities:
+1. Azure Tenant Migration Tool
+2. User/Guest Creation Tool
 
-## Requirements
+The application allows for tenant-to-tenant migration, user and guest account creation, and group management within Microsoft Azure using Microsoft Graph API and Azure Active Directory. The application features a modern GUI with light and dark modes.
 
-- Python 3.x
-- Azure Identity
-- Azure Management Resource
-- PyQt5
+## Features
+
+### Azure Tenant Migration Tool
+- Authenticate source and destination Azure tenants.
+- Fetch and display groups from the destination tenant.
+- Migrate users from the source to the destination tenant.
+- Option to delete users from the source tenant after migration.
+
+### User/Guest Creation Tool
+- Authenticate Azure tenant.
+- Fetch and display groups from the tenant.
+- Create users based on SolarWinds Service Desk tickets.
+- Create guests and add them to selected groups.
+- Send email notifications with account details.
 
 ## Installation
 
-1. Create a virtual environment:
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-    ```
+### Prerequisites
+- Python 3.8+
+- Microsoft Azure Subscription
+- Azure Active Directory
+- SolarWinds Service Desk API credentials
 
-2. Install the required libraries:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-1. Run the app:
-    ```bash
-    python main.py
-    ```
-
-2. Sign in to both Azure tenants.
-
-3. Select the data types to migrate and click on "Migrate Data".
+### Install Dependencies
+```bash
+pip install -r requirements.txt

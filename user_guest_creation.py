@@ -1,12 +1,12 @@
-import smtplib
-from email.mime.text import MIMEText
-
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QComboBox, QListWidget, QLabel, QCheckBox, \
+    QListWidgetItem, QLineEdit, QFormLayout, QDialog, QDialogButtonBox
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QComboBox, QListWidget, QLabel
 from azure.identity import InteractiveBrowserCredential
 import jwt
 import requests
 import logging
+from email.mime.text import MIMEText
+import smtplib
 
 
 class UserGuestCreationApp(QWidget):
@@ -25,8 +25,12 @@ class UserGuestCreationApp(QWidget):
         self.authenticate_button.clicked.connect(self.authenticate_tenant)
         layout.addWidget(self.authenticate_button)
 
-        self.domain_selector = QComboBox()
-        layout.addWidget(self.domain_selector)
+        self.groups_label = QLabel('Groups:')
+        layout.addWidget(self.groups_label)
+
+        self.groups_list = QListWidget()
+        self.groups_list.setSelectionMode(QListWidget.MultiSelection)
+        layout.addWidget(self.groups_list)
 
         self.fetch_groups_button = QPushButton('Fetch Groups')
         self.fetch_groups_button.clicked.connect(self.fetch_groups)
@@ -35,6 +39,10 @@ class UserGuestCreationApp(QWidget):
         self.user_list = QListWidget()
         layout.addWidget(self.user_list)
 
+        self.fetch_tickets_button = QPushButton('Fetch Tickets')
+        self.fetch_tickets_button.clicked.connect(self.fetch_tickets)
+        layout.addWidget(self.fetch_tickets_button)
+
         self.create_user_button = QPushButton('Create User')
         self.create_user_button.clicked.connect(self.create_user)
         layout.addWidget(self.create_user_button)
@@ -42,6 +50,10 @@ class UserGuestCreationApp(QWidget):
         self.create_guest_button = QPushButton('Create Guest')
         self.create_guest_button.clicked.connect(self.create_guest)
         layout.addWidget(self.create_guest_button)
+
+        self.manual_user_button = QPushButton('Create User Manually')
+        self.manual_user_button.clicked.connect(self.show_manual_user_dialog)
+        layout.addWidget(self.manual_user_button)
 
         self.setLayout(layout)
         self.setWindowTitle('User/Guest Creation Tool')
@@ -85,10 +97,35 @@ class UserGuestCreationApp(QWidget):
             logging.error(f"Failed to fetch groups: {e}")
 
     def populate_group_selector(self, groups_data):
-        self.domain_selector.clear()
+        self.groups_list.clear()
         for group in groups_data:
-            logging.debug(f"Adding group to selector: {group['displayName']} with ID {group['id']}")
-            self.domain_selector.addItem(group['displayName'], group['id'])
+            item = QListWidgetItem(group['displayName'])
+            item.setData(Qt.UserRole, group['id'])
+            item.setCheckState(Qt.Unchecked)
+            self.groups_list.addItem(item)
+
+    def fetch_tickets(self):
+        try:
+            api_url = "https://your_solarwinds_api_endpoint"  # Replace with your SolarWinds API endpoint
+            api_key = "your_api_key"  # Replace with your API key
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            response = requests.get(api_url, headers=headers)
+            response.raise_for_status()
+            tickets = response.json()
+            self.populate_user_list(tickets)
+        except Exception as e:
+            logging.error(f"Failed to fetch tickets: {e}")
+
+    def populate_user_list(self, tickets):
+        self.user_list.clear()
+        for ticket in tickets:
+            item_text = f"{ticket['name']} - {ticket['requester']['name']} ({ticket['requester']['email']})"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, ticket)
+            self.user_list.addItem(item)
 
     def create_user(self):
         try:
@@ -98,9 +135,19 @@ class UserGuestCreationApp(QWidget):
                 return
 
             for item in selected_items:
-                user_data = item.data(Qt.UserRole)
+                ticket = item.data(Qt.UserRole)
+                user_data = {
+                    "firstName": ticket['requester']['name'].split()[0],
+                    "lastName": ticket['requester']['name'].split()[-1],
+                    "email": ticket['requester']['email'],
+                    "department": ticket['department']['name'],
+                    "jobTitle": ticket['assignee']['name'],
+                    "companyName": ticket['site']['name']
+                }
                 self.create_user_in_azure(user_data)
-                # Logic for updating ticket and sending email here
+                self.update_ticket_status(ticket['id'])
+                self.send_email(user_data, "User Account Created", self.generate_email_body(user_data),
+                                ticket['assignee']['email'])
         except Exception as e:
             logging.error(f"Failed to create user: {e}")
 
@@ -131,11 +178,11 @@ class UserGuestCreationApp(QWidget):
             response.raise_for_status()
             logging.info(f"User created: {user_data['firstName']} {user_data['lastName']}")
 
-            self.add_user_to_group(user_data)
+            self.add_user_to_groups(user_data)
         except Exception as e:
             logging.error(f"Failed to create user in Azure AD: {e}")
 
-    def add_user_to_group(self, user_data):
+    def add_user_to_groups(self, user_data):
         try:
             token = self.credential.get_token("https://graph.microsoft.com/.default").token
             headers = {
@@ -143,17 +190,21 @@ class UserGuestCreationApp(QWidget):
                 "Content-Type": "application/json"
             }
 
-            group_id = self.domain_selector.currentData()
             user_id = self.get_user_id(user_data['userPrincipalName'])
-            add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
-            add_to_group_payload = {
-                "@odata.id": f"https://graph.microsoft.com/v1.0/users/{user_id}"
-            }
-            response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
-            response.raise_for_status()
-            logging.info(f"User added to group: {user_data['firstName']} {user_data['lastName']}")
+            selected_groups = [self.groups_list.item(i).data(Qt.UserRole) for i in range(self.groups_list.count()) if
+                               self.groups_list.item(i).checkState() == Qt.Checked]
+
+            for group_id in selected_groups:
+                add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
+                add_to_group_payload = {
+                    "@odata.id": f"https://graph.microsoft.com/v1.0/users/{user_id}"
+                }
+                response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
+                response.raise_for_status()
+                logging.info(f"User added to group: {group_id}")
+
         except Exception as e:
-            logging.error(f"Failed to add user to group: {e}")
+            logging.error(f"Failed to add user to groups: {e}")
 
     def get_user_id(self, user_principal_name):
         try:
@@ -179,9 +230,14 @@ class UserGuestCreationApp(QWidget):
                 return
 
             for item in selected_items:
-                user_data = item.data(Qt.UserRole)
+                ticket = item.data(Qt.UserRole)
+                user_data = {
+                    "firstName": ticket['requester']['name'].split()[0],
+                    "lastName": ticket['requester']['name'].split()[-1],
+                    "email": ticket['requester']['email']
+                }
                 self.create_guest_in_azure(user_data)
-                # Logic for updating ticket here
+                self.update_ticket_status(ticket['id'])
         except Exception as e:
             logging.error(f"Failed to create guest: {e}")
 
@@ -205,11 +261,11 @@ class UserGuestCreationApp(QWidget):
             response.raise_for_status()
             logging.info(f"Guest created: {user_data['firstName']} {user_data['lastName']}")
 
-            self.add_guest_to_group(user_data)
+            self.add_guest_to_groups(user_data)
         except Exception as e:
             logging.error(f"Failed to create guest in Azure AD: {e}")
 
-    def add_guest_to_group(self, user_data):
+    def add_guest_to_groups(self, user_data):
         try:
             token = self.credential.get_token("https://graph.microsoft.com/.default").token
             headers = {
@@ -217,22 +273,45 @@ class UserGuestCreationApp(QWidget):
                 "Content-Type": "application/json"
             }
 
-            group_id = self.domain_selector.currentData()
             guest_user_id = self.get_user_id(user_data['email'])
 
             if not guest_user_id:
                 logging.error(f"Guest user ID not found for {user_data['email']}")
                 return
 
-            add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
-            add_to_group_payload = {
-                "@odata.id": f"https://graph.microsoft.com/v1.0/users/{guest_user_id}"
-            }
-            response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
-            response.raise_for_status()
-            logging.info(f"Guest added to group: {user_data['firstName']} {user_data['lastName']}")
+            selected_groups = [self.groups_list.item(i).data(Qt.UserRole) for i in range(self.groups_list.count()) if
+                               self.groups_list.item(i).checkState() == Qt.Checked]
+
+            for group_id in selected_groups:
+                add_to_group_url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
+                add_to_group_payload = {
+                    "@odata.id": f"https://graph.microsoft.com/v1.0/users/{guest_user_id}"
+                }
+                response = requests.post(add_to_group_url, headers=headers, json=add_to_group_payload)
+                response.raise_for_status()
+                logging.info(f"Guest added to group: {group_id}")
+
         except Exception as e:
-            logging.error(f"Failed to add guest to group: {e}")
+            logging.error(f"Failed to add guest to groups: {e}")
+
+    def update_ticket_status(self, ticket_id):
+        try:
+            api_url = f"https://your_solarwinds_api_endpoint/{ticket_id}"  # Replace with your SolarWinds API endpoint
+            api_key = "your_api_key"  # Replace with your API key
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            update_data = {
+                "state": "Resolved",
+                "resolution_code": "Done",
+                "resolution_description": "User/Guest account created successfully."
+            }
+            response = requests.put(api_url, headers=headers, json=update_data)
+            response.raise_for_status()
+            logging.info(f"Ticket {ticket_id} updated successfully.")
+        except Exception as e:
+            logging.error(f"Failed to update ticket status: {e}")
 
     def send_email(self, user_data, subject, body, to_email):
         try:
@@ -270,3 +349,56 @@ class UserGuestCreationApp(QWidget):
         Regards,
         IT Team
         """
+
+    def show_manual_user_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Create User Manually')
+
+        form_layout = QFormLayout()
+        first_name_input = QLineEdit()
+        last_name_input = QLineEdit()
+        email_input = QLineEdit()
+        department_input = QLineEdit()
+        job_title_input = QLineEdit()
+        company_name_input = QLineEdit()
+
+        form_layout.addRow('First Name:', first_name_input)
+        form_layout.addRow('Last Name:', last_name_input)
+        form_layout.addRow('Email:', email_input)
+        form_layout.addRow('Department:', department_input)
+        form_layout.addRow('Job Title:', job_title_input)
+        form_layout.addRow('Company Name:', company_name_input)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(lambda: self.create_manual_user(
+            first_name_input.text(),
+            last_name_input.text(),
+            email_input.text(),
+            department_input.text(),
+            job_title_input.text(),
+            company_name_input.text(),
+            dialog
+        ))
+        buttons.rejected.connect(dialog.reject)
+
+        form_layout.addWidget(buttons)
+        dialog.setLayout(form_layout)
+        dialog.exec_()
+
+    def create_manual_user(self, first_name, last_name, email, department, job_title, company_name, dialog):
+        try:
+            user_data = {
+                "firstName": first_name,
+                "lastName": last_name,
+                "email": email,
+                "department": department,
+                "jobTitle": job_title,
+                "companyName": company_name
+            }
+            self.create_user_in_azure(user_data)
+            self.send_email(user_data, "User Account Created", self.generate_email_body(user_data), email)
+            dialog.accept()
+        except Exception as e:
+            logging.error(f"Failed to create manual user: {e}")
+            dialog.reject()
+
